@@ -1,0 +1,56 @@
+---
+title: "Data Analysis"
+format: html
+editor: visual
+---
+
+```{r Libraries}
+library(rFIA)
+```
+
+# Data Load
+
+```{r Data Load Smaller Datasets}
+
+# getFIA(states = c("CT", "VT", "NH", "ME", "MA", "NY", "RI")) #had timeout
+
+# Download one state at a time to avoid timeout
+ct <- getFIA(states = "CT")
+ma <- getFIA(states = "MA")
+ri <- getFIA(states = "RI")
+```
+
+```{r}
+# Create the folder
+dir.create("FIA_data")
+# Save each state to an .rds file
+saveRDS(ct, "FIA_data/CT_FIA.rds")
+saveRDS(ri, "FIA_data/RI_FIA.rds")
+saveRDS(ma, "FIA_data/MA_FIA.rds")
+
+
+```
+
+```{r}
+# Later, load them offline
+ct <- readRDS("FIA_data/CT_FIA.rds")
+ri <- readRDS("FIA_data/RI_FIA.rds")
+ma <- readRDS("FIA_data/MA_FIA.rds")
+```
+
+```{r Large Datasets causing timeout}
+
+# This is the large one causing timeout
+me <- getFIA(states = "ME")
+vt <- getFIA(states = "VT")
+ny <- getFIA(states = "NY")
+nh <- getFIA(states = "NH")
+```
+
+```{r Combined Dataset}
+# Combine them
+all_states <- list(CT = ct, VT = vt, NH = nh, ME = me, 
+                   MA = ma, NY = ny, RI = ri)
+```
+
+# Data Cleaning
