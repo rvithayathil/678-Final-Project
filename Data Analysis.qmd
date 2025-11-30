@@ -6,6 +6,7 @@ editor: visual
 
 ```{r Libraries}
 library(rFIA)
+library(dplyr)
 ```
 
 # Data Load
@@ -49,8 +50,216 @@ nh <- getFIA(states = "NH")
 
 ```{r Combined Dataset}
 # Combine them
-all_states <- list(CT = ct, VT = vt, NH = nh, ME = me, 
-                   MA = ma, NY = ny, RI = ri)
+#all_states <- list(CT = ct, VT = vt, NH = nh, ME = me, 
+                  # MA = ma, NY = ny, RI = ri)
+all_states <- list(CT = ct, MA = ma,RI = ri)
 ```
 
 # Data Cleaning
+
+```{r}
+View(all_states)
+```
+
+```{r}
+head(ct)
+
+```
+
+```{r}
+# Key columns needed
+ct$TREE %>%
+  select(PLT_CN, TREE, SUBP, CONDID, STATUSCD, SPCD, DIA, PREVDIA, 
+         INVYR, TPA_UNADJ) %>%
+  head(20)
+```
+
+```{r}
+# How many trees have both current and previous diameter?
+ct$TREE %>%
+  summarize(
+    total_trees = n(),
+    has_current_dia = sum(!is.na(DIA)),
+    has_prev_dia = sum(!is.na(PREVDIA)),
+    has_both = sum(!is.na(DIA) & !is.na(PREVDIA))
+  )
+
+# Look at some examples with growth data
+ct$TREE %>%
+  filter(!is.na(DIA) & !is.na(PREVDIA)) %>%
+  select(SPCD, DIA, PREVDIA, INVYR, STATUSCD) %>%
+  head(20)
+```
+
+```{r}
+# Look at all inventory years
+ct$TREE %>%
+  count(INVYR) %>%
+  arrange(INVYR)
+
+# See which years have remeasurements
+ct$TREE %>%
+  group_by(INVYR) %>%
+  summarize(
+    total = n(),
+    has_prevdia = sum(!is.na(PREVDIA)),
+    pct_with_prev = round(100 * has_prevdia / total, 1)
+  ) %>%
+  arrange(INVYR)
+```
+
+## The Pattern:
+
+-   **1985-2007**: First measurements (no PREVDIA - 0% have previous diameter)
+-   **2008-2020**: Remeasurements (84-95% have PREVDIA)
+
+```{r}
+# This table might have pre-calculated growth
+head(ct$TREE_GRM_COMPONENT)
+names(ct$TREE_GRM_COMPONENT)
+dim(ct$TREE_GRM_COMPONENT)
+
+# Look for growth-related columns
+ct$TREE_GRM_COMPONENT %>%
+  select(contains("DIA"), contains("GRM"), contains("GROW")) %>%
+  head(20)
+```
+
+The `TREE_GRM_COMPONENT` table has **pre-calculated annual growth rates**
+
+## Key columns we need:
+
+-   **ANN_DIA_GROWTH** - Annual diameter growth (already calculated!)
+-   **DIA_BEGIN** - Starting diameter
+-   **DIA_END** - Ending diameter
+-   **TRE_CN** - Tree identifier (to join back to TREE table)
+
+```{r}
+# Look at the growth data
+head(ct$TREE_GRM_COMPONENT %>% 
+     select(TRE_CN, PLT_CN, DIA_BEGIN, DIA_END, ANN_DIA_GROWTH))
+
+# Summary statistics
+summary(ct$TREE_GRM_COMPONENT$ANN_DIA_GROWTH)
+
+# Remove any missing or weird values
+growth_clean <- ct$TREE_GRM_COMPONENT %>%
+  filter(!is.na(ANN_DIA_GROWTH),
+         ANN_DIA_GROWTH > 0,  # Positive growth only
+         ANN_DIA_GROWTH < 2)  # Remove outliers (>2 inches/year is suspicious)
+
+# How many trees?
+nrow(growth_clean)
+
+# Distribution
+hist(growth_clean$ANN_DIA_GROWTH, breaks = 50,
+     main = "Annual Diameter Growth",
+     xlab = "Growth (inches/year)")
+```
+
+```{r}
+# Check what's actually in PLOTGEOM
+names(ct$PLOTGEOM)
+```
+
+```{r}
+# Create final dataset
+analysis_data <- growth_clean %>%
+  # Join to TREE table for species info
+  left_join(ct$TREE %>% select(CN, SPCD, STATUSCD, INVYR),
+            by = c("TRE_CN" = "CN")) %>%
+  # Join to COND for forest type and stand age
+  left_join(ct$COND %>% select(PLT_CN, CONDID, FORTYPCD, STDAGE),
+            by = "PLT_CN") %>%
+  # Join to PLOTGEOM for ecological codes and location
+  left_join(ct$PLOTGEOM %>% select(CN, LAT, LON, ECOSUBCD),
+            by = c("PLT_CN" = "CN"))
+
+# Check the result
+dim(analysis_data)
+names(analysis_data)
+
+# Summary statistics
+analysis_data %>%
+  summarize(
+    n_trees = n(),
+    n_plots = n_distinct(PLT_CN),
+    n_subsections = n_distinct(ECOSUBCD, na.rm = TRUE),
+    n_forest_types = n_distinct(FORTYPCD, na.rm = TRUE),
+    mean_growth = mean(ANN_DIA_GROWTH, na.rm = TRUE),
+    mean_dia_begin = mean(DIA_BEGIN, na.rm = TRUE),
+    pct_with_ecosubcd = 100 * sum(!is.na(ECOSUBCD)) / n()
+  )
+
+# What subsections exist?
+analysis_data %>%
+  count(ECOSUBCD, sort = TRUE)
+
+# What forest types?
+analysis_data %>%
+  count(FORTYPCD, sort = TRUE) %>%
+  head(10)
+```
+
+```{r}
+# Create growth variable
+tree_growth <- ct$TREE %>%
+  filter(!is.na(DIA) & !is.na(PREVDIA)) %>%
+  mutate(
+    diameter_change = DIA - PREVDIA,
+    # Will need measurement interval to calculate annual growth
+    # This comes from joining with other tables
+  )
+
+dim(tree_growth)
+summary(tree_growth$diameter_change)
+```
+
+```{r}
+# Look at plot structure
+head(ct$PLOT)
+names(ct$PLOT)
+
+# Check measurement years
+ct$PLOT %>%
+  count(INVYR) %>%
+  arrange(INVYR)
+```
+
+```{r}
+# Forest type codes
+head(ct$COND)
+names(ct$COND)
+
+# What forest types exist?
+ct$COND %>%
+  count(FORTYPCD) %>%
+  arrange(desc(n))
+```
+
+```{r}
+# Ecological codes
+head(ct$PLOTGEOM)
+names(ct$PLOTGEOM)
+
+# What provinces/subsections?
+ct$PLOTGEOM %>%
+  count(ECOPROVCD) %>%
+  arrange(desc(n))
+
+ct$PLOTGEOM %>%
+  count(ECOSUBCD) %>%
+  arrange(desc(n))
+```
+
+```{r}
+head(ma)
+```
+
+```{r}
+names(ct)
+```
+
+```{r}
+head(ri)
+```
