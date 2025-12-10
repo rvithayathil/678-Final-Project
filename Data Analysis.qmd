@@ -11,45 +11,43 @@ library(dplyr)
 
 # Data Load
 
-```{r Data Load Smaller Datasets}
-
-# getFIA(states = c("CT", "VT", "NH", "ME", "MA", "NY", "RI")) #had timeout
-
-# Download one state at a time to avoid timeout
-ct <- getFIA(states = "CT")
-ma <- getFIA(states = "MA")
-ri <- getFIA(states = "RI")
-```
-
-```{r}
-# Create the folder
-dir.create("FIA_data")
-# Save each state to an .rds file
-saveRDS(ct, "FIA_data/CT_FIA.rds")
-saveRDS(ri, "FIA_data/RI_FIA.rds")
-saveRDS(ma, "FIA_data/MA_FIA.rds")
-
+```{r Large Datasets causing timeout}
+# large ones causing timeout, limit scope to the 3 states we can load
+# options(timeout = 600)
+#me <- getFIA(states = "ME")
+#vt <- getFIA(states = "VT")
+#ny <- getFIA(states = "NY")
+#nh <- getFIA(states = "NH")
 
 ```
 
+```{r Data Load}
+
+# Initially Downloaded data using getFIA, Data then stored in offline folder
+
+#Download separately to avoid timeout
+#ct <- getFIA(states = "CT")
+#ma <- getFIA(states = "MA")
+#ri <- getFIA(states = "RI")
+```
+
 ```{r}
-# Later, load them offline
+#Create Folder and save files there
+#dir.create("FIA_data")
+#saveRDS(ct, "FIA_data/CT_FIA.rds")
+#saveRDS(ma, "FIA_data/MA_FIA.rds")
+#saveRDS(ri, "FIA_data/RI_FIA.rds")
+```
+
+```{r environment load}
+# Load data from folder into environment
 ct <- readRDS("FIA_data/CT_FIA.rds")
 ri <- readRDS("FIA_data/RI_FIA.rds")
 ma <- readRDS("FIA_data/MA_FIA.rds")
 ```
 
-```{r Large Datasets causing timeout}
-
-# This is the large one causing timeout
-me <- getFIA(states = "ME")
-vt <- getFIA(states = "VT")
-ny <- getFIA(states = "NY")
-nh <- getFIA(states = "NH")
-```
-
 ```{r Combined Dataset}
-# Combine them
+# Combine them, each state object has multiple data tables within it
 #all_states <- list(CT = ct, VT = vt, NH = nh, ME = me, 
                   # MA = ma, NY = ny, RI = ri)
 all_states <- list(CT = ct, MA = ma,RI = ri)
@@ -61,20 +59,57 @@ all_states <- list(CT = ct, MA = ma,RI = ri)
 View(all_states)
 ```
 
-```{r}
-head(ct)
+## Connecticut
 
+Start with one state first
+
+### Key Tables
+
+Tables we are interested in for our model:
+
+-   PLOT - Plot information
+-   TREE - Individual tree measurements
+-   COND - Stand conditions and forest types
+-   PLOTGEOM - Geographic/ecological classifications
+-   TREE_GRM_COMPNENT - Pre-calculated growth rates
+-   SURVEY - Survey metadata (measurement intervals)
+
+### Tree Table
+
+#### Key columns to look at in TREE:
+
+-   DIA (current diameter)
+-   PREVDIA (previous diameter)
+-   SPCD (species code)
+-   STATUSCD (alive/dead)
+-   NVYR (inventory year)
+
+```{r Tree dataset}
+# Look at CT tree data
+dim(ct$TREE)  # How many rows/columns?
+names(ct$TREE)  # What columns exist?
+head(ct$TREE)  # First few rows
 ```
 
 ```{r}
-# Key columns needed
+# Key columns to look for in TREE:
+# - DIA (current diameter)
+# - PREVDIA (previous diameter) 
+# - SPCD (species code)
+# - STATUSCD (alive/dead)
+# - INVYR (inventory year)
+
 ct$TREE %>%
   select(PLT_CN, TREE, SUBP, CONDID, STATUSCD, SPCD, DIA, PREVDIA, 
          INVYR, TPA_UNADJ) %>%
   head(20)
-```
 
-```{r}
+# Look at some examples with growth data
+ct$TREE %>%
+  filter(!is.na(DIA) & !is.na(PREVDIA)) %>%
+  select(SPCD, DIA, PREVDIA, INVYR, STATUSCD) %>%
+  head(20)
+
 # How many trees have both current and previous diameter?
 ct$TREE %>%
   summarize(
@@ -84,12 +119,42 @@ ct$TREE %>%
     has_both = sum(!is.na(DIA) & !is.na(PREVDIA))
   )
 
-# Look at some examples with growth data
-ct$TREE %>%
-  filter(!is.na(DIA) & !is.na(PREVDIA)) %>%
-  select(SPCD, DIA, PREVDIA, INVYR, STATUSCD) %>%
-  head(20)
+
+
+#Calculate % missing per column
+missing_summary <- ct$TREE %>%
+  select(PLT_CN, TREE, SUBP, CONDID, STATUSCD, SPCD, DIA, PREVDIA, 
+         INVYR, TPA_UNADJ) %>%
+  summarise(
+    PLT_CN = 100 * sum(is.na(PLT_CN)) / n(),
+    TREE = 100 * sum(is.na(TREE)) / n(),
+    SUBP = 100 * sum(is.na(SUBP)) / n(),
+    CONDID = 100 * sum(is.na(CONDID)) / n(),
+    STATUSCD = 100 * sum(is.na(STATUSCD)) / n(),
+    SPCD = 100 * sum(is.na(SPCD)) / n(),
+    DIA = 100 * sum(is.na(DIA)) / n(),
+    PREVDIA = 100 * sum(is.na(PREVDIA)) / n(),
+    INVYR = 100 * sum(is.na(INVYR)) / n(),
+    TPA_UNADJ = 100 * sum(is.na(TPA_UNADJ)) / n()
+  )
+
+# View Missing Summary Table
+t(missing_summary)
 ```
+
+#### Missing Data Summary:
+
+-   **0% missing**: PLT_CN, TREE, SUBP, CONDID, STATUSCD, SPCD, INVYR (core identifiers)
+
+-   **8.2% missing**: DIA
+
+-   **57% missing**: PREVDIA (only remeasured trees have this)
+
+-   **11.6% missing**: TPA_UNADJ (trees per acre adjustment)
+
+It seems this table is every tree recorded but there are many trees which didn't have more than one measurement. With nearly 60% missing repeat measurements imputation is not recommended.
+
+Lets see if there are patterns in what is missing:
 
 ```{r}
 # Look at all inventory years
@@ -108,10 +173,176 @@ ct$TREE %>%
   arrange(INVYR)
 ```
 
-## The Pattern:
+#### The Pattern:
 
--   **1985-2007**: First measurements (no PREVDIA - 0% have previous diameter)
--   **2008-2020**: Remeasurements (84-95% have PREVDIA)
+-   **1985-2007**: First measurements only (no PREVDIA - 0% have previous diameter with exception of a few in 1998)
+-   **2008-2020**: Includes remeasurements (84-95% have PREVDIA)
+
+We should at least limit the scope of our dataset to 2008 - 2020. We may restrict it further based on missingness in the other two state datasets.
+
+#### Missingness 2008 - 2020
+
+```{r}
+# How many trees have both current and previous diameter (2008-2020)?
+ct$TREE %>%
+  filter(INVYR >= 2008 & INVYR <= 2020) %>%  # Filter to remeasurement years
+  summarize(
+    total_trees = n(),
+    has_current_dia = sum(!is.na(DIA)),
+    has_prev_dia = sum(!is.na(PREVDIA)),
+    has_both = sum(!is.na(DIA) & !is.na(PREVDIA))
+  )
+
+# Calculate % missing per column (2008-2020 only)
+missing_summary_limited <- ct$TREE %>%
+  filter(INVYR >= 2008 & INVYR <= 2020) %>%  # Filter to remeasurement years
+  select(PLT_CN, TREE, SUBP, CONDID, STATUSCD, SPCD, DIA, PREVDIA, 
+         INVYR, TPA_UNADJ) %>%
+  summarise(
+    PLT_CN = 100 * sum(is.na(PLT_CN)) / n(),
+    TREE = 100 * sum(is.na(TREE)) / n(),
+    SUBP = 100 * sum(is.na(SUBP)) / n(),
+    CONDID = 100 * sum(is.na(CONDID)) / n(),
+    STATUSCD = 100 * sum(is.na(STATUSCD)) / n(),
+    SPCD = 100 * sum(is.na(SPCD)) / n(),
+    DIA = 100 * sum(is.na(DIA)) / n(),
+    PREVDIA = 100 * sum(is.na(PREVDIA)) / n(),
+    INVYR = 100 * sum(is.na(INVYR)) / n(),
+    TPA_UNADJ = 100 * sum(is.na(TPA_UNADJ)) / n()
+  )
+
+# View Missing Summary Table
+t(missing_summary_limited)
+```
+
+#### What's still missing?
+
+Let's look at the STATUSCD (alive/dead) column to see if the missingness is due to tree death.
+
+**FIA Status Codes:**
+
+![](images/clipboard-122537803.png){width="451"}
+
+-   **1** = Live tree
+-   **2** = Dead tree
+
+```{r}
+# Of the trees missing DIA, what % are dead/removed?
+ct$TREE %>%
+  filter(INVYR >= 2008 & INVYR <= 2020) %>%
+  filter(is.na(DIA)) %>%  # Only look at trees missing DIA
+  summarize(
+    total_missing_dia = n(),
+    n_dead = sum(STATUSCD == 2, na.rm = TRUE),
+    n_removed = sum(STATUSCD == 3, na.rm = TRUE),
+    n_alive = sum(STATUSCD == 1, na.rm = TRUE),
+    pct_dead = 100 * n_dead / total_missing_dia,
+    pct_removed = 100 * n_removed / total_missing_dia,
+    pct_alive = 100 * n_alive / total_missing_dia
+  )
+
+# Of the trees missing PREVDIA, what % are dead/removed?
+ct$TREE %>%
+  filter(INVYR >= 2008 & INVYR <= 2020) %>%
+  filter(is.na(PREVDIA)) %>%  # Only look at trees missing PREVDIA
+  summarize(
+    total_missing_prevdia = n(),
+    n_dead = sum(STATUSCD == 2, na.rm = TRUE),
+    n_removed = sum(STATUSCD == 3, na.rm = TRUE),
+    n_alive = sum(STATUSCD == 1, na.rm = TRUE),
+    pct_dead = 100 * n_dead / total_missing_prevdia,
+    pct_removed = 100 * n_removed / total_missing_prevdia,
+    pct_alive = 100 * n_alive / total_missing_prevdia
+  )
+
+# Cleaner crosstab for missing DIA
+ct$TREE %>%
+  filter(INVYR >= 2008 & INVYR <= 2020) %>%
+  filter(is.na(DIA)) %>%
+  count(STATUSCD) %>%
+  mutate(
+    pct = round(100 * n / sum(n), 1),
+    status_label = case_when(
+      STATUSCD == 0 ~ "Unknown",
+      STATUSCD == 1 ~ "Live",
+      STATUSCD == 2 ~ "Dead", 
+      STATUSCD == 3 ~ "Removed",
+      TRUE ~ "Other"
+    )
+  ) %>%
+  select(STATUSCD, status_label, n, pct)
+```
+
+```{r}
+# See ALL status codes for missing DIA trees
+ct$TREE %>%
+  filter(INVYR >= 2008 & INVYR <= 2020) %>%
+  filter(is.na(DIA)) %>%
+  count(STATUSCD) %>%
+  mutate(
+    pct = round(100 * n / sum(n), 1),
+    status_label = case_when(
+      STATUSCD == 0 ~ "Unknown",
+      STATUSCD == 1 ~ "Live",
+      STATUSCD == 2 ~ "Dead", 
+      STATUSCD == 3 ~ "Removed",
+      TRUE ~ as.character(STATUSCD)  # Show any other codes
+    )
+  ) %>%
+  arrange(STATUSCD)
+
+# Total count to verify
+ct$TREE %>%
+  filter(INVYR >= 2008 & INVYR <= 2020) %>%
+  filter(is.na(DIA)) %>%
+  summarize(total = n())
+```
+
+```{r}
+# Check if STATUSCD 3 exists
+ct$TREE %>%
+  filter(INVYR >= 2008 & INVYR <= 2020) %>%
+  filter(is.na(DIA)) %>%
+  count(STATUSCD, sort = TRUE)
+
+# Or check for any NA status codes
+ct$TREE %>%
+  filter(INVYR >= 2008 & INVYR <= 2020) %>%
+  filter(is.na(DIA)) %>%
+  summarize(
+    n_status_0 = sum(STATUSCD == 0, na.rm = TRUE),
+    n_status_1 = sum(STATUSCD == 1, na.rm = TRUE),
+    n_status_2 = sum(STATUSCD == 2, na.rm = TRUE),
+    n_status_3 = sum(STATUSCD == 3, na.rm = TRUE),
+    n_status_NA = sum(is.na(STATUSCD))
+  )
+```
+
+```{r}
+# See ALL unique status codes (not just 0, 1, 2, 3)
+ct$TREE %>%
+  filter(INVYR >= 2008 & INVYR <= 2020) %>%
+  filter(is.na(DIA)) %>%
+  pull(STATUSCD) %>%
+  unique() %>%
+  sort()
+
+# Or check the full range
+ct$TREE %>%
+  filter(INVYR >= 2008 & INVYR <= 2020) %>%
+  filter(is.na(DIA)) %>%
+  group_by(STATUSCD) %>%
+  summarize(n = n()) %>%
+  arrange(STATUSCD)
+
+# Double-check the count function isn't dropping rows
+ct$TREE %>%
+  filter(INVYR >= 2008 & INVYR <= 2020) %>%
+  filter(is.na(DIA)) %>%
+  nrow()
+```
+
+We also have the TREE_GRM_COMPNENT table. This should only include remeasured trees.
 
 ```{r}
 # This table might have pre-calculated growth
@@ -263,3 +494,15 @@ names(ct)
 ```{r}
 head(ri)
 ```
+
+# References
+
+**USFS Forest Inventory and Analysis (FIA) Program**
+
+-   **Main site: <https://research.fs.usda.gov/programs/fia>**
+
+-   **Data Download: <https://apps.fs.usda.gov/fia/datamart/datamart.html>**
+
+-   **FIADB Population Estimation User Guide**: [**https://research.fs.usda.gov/understory/fiadb-population-estimation-user-guide**](https://research.fs.usda.gov/understory/fiadb-population-estimation-user-guide)
+
+**Claude.ai: <https://claude.ai/new>**
