@@ -7,6 +7,7 @@ editor: visual
 ```{r Libraries}
 library(rFIA)
 library(dplyr)
+library(ggplot2)
 ```
 
 # Data Load
@@ -75,6 +76,14 @@ Tables we are interested in for our model:
 -   SURVEY - Survey metadata (measurement intervals)
 
 ### Tree Table
+
+```{r}
+# Load the library
+library(readr)
+
+# Export the data frame
+write_csv(ct$TREE, path = "TREE.csv") 
+```
 
 #### Key columns to look at in TREE:
 
@@ -221,8 +230,88 @@ Let's look at the STATUSCD (alive/dead) column to see if the missingness is due 
 
 **FIA Status Codes:**
 
-![](images/clipboard-122537803.png){width="451"}
+Let's Look at the codes in our data:
 
+```{r}
+unique_statuscd <- ct$TREE %>%
+  distinct(STATUSCD) %>%
+  pull(STATUSCD)
+
+print(unique_statuscd)
+```
+
+It Looks like there is an extra code "0" and "3"
+
+Based other FIA online materials **STATUSCD = 3** typically means **"Removed/Cut"**, **STATUSCD = 0** means not tallied due to natural causes.
+
+Let's check we have all the same codes for our date range:
+
+```{r}
+unique_statuscd_2008_2020 <- ct$TREE %>%
+  filter(INVYR >= 2008, INVYR <= 2020) %>%
+  distinct(STATUSCD) %>%
+  pull(STATUSCD)
+
+unique_statuscd_2008_2020
+```
+
+0 remains but 3 is not used in recent years. Perhaps 0 has replaced 3 for removed/cut?
+
+Let's check what codes were in earlier years and see if there were zeros
+
+```{r}
+
+library(dplyr)
+
+# Create a dataset with status codes grouped by time period
+status_comparison <- ct$TREE %>%
+  mutate(
+    time_period = case_when(
+      INVYR < 2008 ~ "Before 2008",
+      INVYR >= 2008 ~ "2008-2020"
+    ),
+    status_label = case_when(
+      STATUSCD == 0 ~ "0: Not tallied",
+      STATUSCD == 1 ~ "1: Live",
+      STATUSCD == 2 ~ "2: Dead",
+      STATUSCD == 3 ~ "3: Removed",
+      TRUE ~ as.character(STATUSCD)
+    )
+  ) %>%
+  count(time_period, status_label) %>%
+  group_by(time_period) %>%
+  mutate(
+    pct = 100 * n / sum(n)
+  )
+
+# View the data
+status_comparison
+
+# Alternative: Faceted plot (separate panels)
+ggplot(status_comparison, aes(x = status_label, y = pct, fill = status_label)) +
+  geom_col() +
+  facet_wrap(~time_period) +
+  labs(
+    title = "Tree Status Distribution by Time Period",
+    x = "Status Code",
+    y = "Percentage of Trees (%)"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none"
+  )
+```
+
+It loooks like there was less untallied prior to 2008 3.6% –\> 7.4%
+
+Also Removed trees before to after 2008 2.1% –\> 0%
+
+It's plausible that removed trees are now part of the 0 category but may not account for the entire category. Since online materials describe the 0 status code as untallied due to natural causes I think we can assume trees in this category are dead trees though whether they are dead due to removal or natural causes is not certain.
+
+**Our Data:**
+
+-   **0** = Dead tree
 -   **1** = Live tree
 -   **2** = Dead tree
 
@@ -505,4 +594,14 @@ head(ri)
 
 -   **FIADB Population Estimation User Guide**: [**https://research.fs.usda.gov/understory/fiadb-population-estimation-user-guide**](https://research.fs.usda.gov/understory/fiadb-population-estimation-user-guide)
 
-**Claude.ai: <https://claude.ai/new>**
+-   **FIA Database Description and Users Manual: <https://www.fs.usda.gov/rm/pubs/rmrs_gtr245.pdf>**
+
+-   **Claude.ai: <https://claude.ai/new>**
+
+# Supplementary Material
+
+![](images/clipboard-122537803.png){width="490"}
+
+![](images/clipboard-1989162094.png){width="491"}
+
+![](images/clipboard-2792531723.png)
