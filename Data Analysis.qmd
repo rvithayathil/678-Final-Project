@@ -11,6 +11,8 @@ library(rFIA)
 library(dplyr)
 library(ggplot2)
 library(tibble)
+library(tidyverse)
+library(lme4)
 library(knitr)
 options(tibble.width = Inf)   # show all columnsoptions(digits = 10)          # show more digits
 ```
@@ -743,7 +745,7 @@ The standard deviations are low (0.92 - 1.52), meaning:
 
 ### TREE_GRM_COMPENT
 
-We also have the TREE_GRM_COMPNENT table. This should only include remeasured trees. We've analyzed the full TREE table with all the samples to understand what it is that's missing in the TREE_GRM_COMPENT table.
+We also have the TREE_GRM_COMPNENT table. This should only include remeasured trees. We've analyzed the full TREE table with all the samples to understand what it is that's missing in the TREE_GRM_COMPENT table from the full tree dataset.
 
 ```{r}
 # This table might have pre-calculated growth
@@ -954,73 +956,67 @@ hist(growth_clean_sqrt$sqrt_growth, breaks = 50,
 ```
 
 ```{r}
-# Check what's actually in PLOTGEOM
-names(ct$PLOTGEOM)
-```
-
-```{r}
-# Create final dataset
-analysis_data <- growth_clean %>%
-  # Join to TREE table for species info
-  left_join(ct$TREE %>% select(CN, SPCD, STATUSCD, INVYR),
-            by = c("TRE_CN" = "CN")) %>%
-  # Join to COND for forest type and stand age
-  left_join(ct$COND %>% select(PLT_CN, CONDID, FORTYPCD, STDAGE),
-            by = "PLT_CN") %>%
-  # Join to PLOTGEOM for ecological codes and location
-  left_join(ct$PLOTGEOM %>% select(CN, LAT, LON, ECOSUBCD),
-            by = c("PLT_CN" = "CN"))
-
-# Check the result
-dim(analysis_data)
-names(analysis_data)
-
-# Summary statistics
-analysis_data %>%
-  summarize(
-    n_trees = n(),
-    n_plots = n_distinct(PLT_CN),
-    n_subsections = n_distinct(ECOSUBCD, na.rm = TRUE),
-    n_forest_types = n_distinct(FORTYPCD, na.rm = TRUE),
-    mean_growth = mean(ANN_DIA_GROWTH, na.rm = TRUE),
-    mean_dia_begin = mean(DIA_BEGIN, na.rm = TRUE),
-    pct_with_ecosubcd = 100 * sum(!is.na(ECOSUBCD)) / n()
+# Use the STATE column that's already in growth_clean
+tree_measurements <- growth_with_ids %>%
+  mutate(TREE_ID = paste(STATE, PLOT, SUBP, TREE, sep = "_")) %>%
+  group_by(TREE_ID) %>%
+  summarise(
+    n_measurements = n(),
+    years = paste(sort(unique(INVYR)), collapse = ", ")
   )
 
-# What subsections exist?
-analysis_data %>%
-  count(ECOSUBCD, sort = TRUE)
-
-# What forest types?
-analysis_data %>%
-  count(FORTYPCD, sort = TRUE) %>%
-  head(10)
+# Summary table
+tree_measurements %>%
+  count(n_measurements) %>%
+  mutate(pct = round(100 * n / sum(n), 1)) %>%
+  kable(caption = "Number of Measurements Per Tree",
+        col.names = c("Measurements", "Number of Trees", "Percent"))
 ```
 
-```{r}
-# Create growth variable
-tree_growth <- ct$TREE %>%
-  filter(!is.na(DIA) & !is.na(PREVDIA)) %>%
-  mutate(
-    diameter_change = DIA - PREVDIA,
-    # Will need measurement interval to calculate annual growth
-    # This comes from joining with other tables
-  )
-
-dim(tree_growth)
-summary(tree_growth$diameter_change)
-```
+### Review TREE_ID as Unique Identifier
 
 ```{r}
-# Look at plot structure
-head(ct$PLOT)
-names(ct$PLOT)
+# Pick a few trees with multiple measurements
+example_trees <- model_data %>%
+  group_by(TREE_ID) %>%
+  filter(n() >= 3) %>%  # Trees with 3+ measurements
+  arrange(TREE_ID, INVYR) %>%
+  select(TREE_ID, PLOT_ID, STATE, INVYR, DIA_BEGIN, DIA_END, ANN_DIA_GROWTH) %>%
+  ungroup()
 
-# Check measurement years
-ct$PLOT %>%
-  count(INVYR) %>%
+# Show first few trees
+example_trees %>%
+  head(20) %>%
+  kable(caption = "Example: Same Trees Measured Over Time")
+
+# Pick one specific tree and show its full history
+one_tree <- example_trees %>%
+  filter(TREE_ID == first(TREE_ID)) %>%
   arrange(INVYR)
+
+one_tree %>%
+  kable(caption = "One Tree's Complete Measurement History")
+
+# Verify the tree is growing (DIA should increase over time)
+model_data %>%
+  group_by(TREE_ID) %>%
+  filter(n() >= 2) %>%
+  arrange(TREE_ID, INVYR) %>%
+  mutate(
+    diameter_increases = DIA_END > lag(DIA_END)
+  ) %>%
+  filter(!is.na(diameter_increases)) %>%
+  summarise(
+    pct_increasing = round(100 * sum(diameter_increases) / n(), 1)
+  ) %>%
+  ungroup() %>%
+  summarise(
+    mean_pct_increasing = mean(pct_increasing)
+  ) %>%
+  kable()
 ```
+
+### Review Forest Type
 
 ```{r}
 # Forest type codes
@@ -1031,6 +1027,82 @@ names(ct$COND)
 ct$COND %>%
   count(FORTYPCD) %>%
   arrange(desc(n))
+```
+
+# Dataset Creation
+
+```{r}
+# Create model dataset (starting from growth_clean which has filtering done)
+model_data <- growth_clean %>%
+  # Join with combined_tree to get PLOT, SUBP, TREE identifiers
+  left_join(
+    combined_tree %>% select(CN, PLOT, SUBP, TREE, CONDID, INVYR),
+    by = c("TRE_CN" = "CN")
+  ) %>%
+  # Create IDs
+  mutate(
+    TREE_ID = paste(STATECD, PLOT, SUBP, TREE, sep = "_"),
+    PLOT_ID = paste(STATECD, PLOT, sep = "_"),
+    sqrt_growth = sqrt(ANN_DIA_GROWTH)  # Add sqrt transformation
+  ) %>%
+  # Join with COND for forest type
+  left_join(
+    bind_rows(
+      ct$COND %>% mutate(STATE_COND = "CT"),
+      ma$COND %>% mutate(STATE_COND = "MA"),
+      ri$COND %>% mutate(STATE_COND = "RI")
+    ) %>% select(PLT_CN, CONDID, FORTYPCD, STDAGE),
+    by = c("PLT_CN", "CONDID")
+  ) %>%
+  # Join with PLOTGEOM for ecological subsection
+  left_join(
+    bind_rows(
+      ct$PLOTGEOM %>% mutate(STATE_PLOT = "CT"),
+      ma$PLOTGEOM %>% mutate(STATE_PLOT = "MA"),
+      ri$PLOTGEOM %>% mutate(STATE_PLOT = "RI")
+    ) %>% select(CN, ECOSUBCD, LAT, LON),
+    by = c("PLT_CN" = "CN")
+  )
+
+# Check hierarchical structure
+model_data %>%
+  summarise(
+    Level_5_Ecosubcd = n_distinct(ECOSUBCD),
+    Level_4_States = n_distinct(STATE),
+    Level_3_ForTypes = n_distinct(FORTYPCD),
+    Level_2_Plots = n_distinct(PLOT_ID),
+    Level_1_Trees = n_distinct(TREE_ID),
+    Total_Observations = n()
+  ) %>%
+  kable(caption = "5-Level Hierarchical Structure")
+
+# Distribution of measurements per tree
+model_data %>%
+  group_by(TREE_ID) %>%
+  summarise(n_measurements = n()) %>%
+  count(n_measurements) %>%
+  mutate(pct = round(100 * n / sum(n), 1)) %>%
+  kable(caption = "Measurements per Tree (Repeated Measures)")
+
+# Save the dataset
+saveRDS(model_data, "FIA_data/model_data_multilevel.rds")
+
+
+```
+
+# Model
+
+```{r}
+# Build the 5-level model
+model <- lmer(
+  sqrt_growth ~ 
+    FORTYPCD + STDAGE +
+    (1 | ECOSUBCD / STATE / FORTYPCD / PLOT_ID / TREE_ID),
+  data = model_data
+)
+
+# Model summary
+summary(model)
 ```
 
 # References
@@ -1048,6 +1120,10 @@ ct$COND %>%
 -   **Claude.ai: <https://claude.ai/new>**
 
 # Supplementary Material
+
+**GitHub Link:** [**https://github.com/rvithayathil/678-Final-Project**](https://github.com/rvithayathil/678-Final-Project)
+
+**FIA Supplements:**
 
 ![](images/clipboard-122537803.png){width="490"}
 
