@@ -4,10 +4,33 @@ format: html
 editor: visual
 ---
 
+# Libraries
+
 ```{r Libraries}
 library(rFIA)
 library(dplyr)
 library(ggplot2)
+library(tibble)
+library(knitr)
+options(tibble.width = Inf)   # show all columnsoptions(digits = 10)          # show more digits
+```
+
+```{r}
+options(
+  tibble.print_max = Inf, 
+  tibble.width = Inf,
+  dplyr.print_min = Inf,
+  dplyr.print_max = Inf,
+  pillar.print_max = Inf
+)
+
+options(
+  tibble.width = Inf,        # Don't truncate columns
+  tibble.max_extra_cols = Inf,
+  pillar.width = Inf,
+  pillar.subtle = FALSE,
+  width = 2000               # Console width (prevents cutting)
+)
 ```
 
 # Data Load
@@ -32,7 +55,7 @@ library(ggplot2)
 #ri <- getFIA(states = "RI")
 ```
 
-```{r}
+```{r folders}
 #Create Folder and save files there
 #dir.create("FIA_data")
 #saveRDS(ct, "FIA_data/CT_FIA.rds")
@@ -54,10 +77,10 @@ ma <- readRDS("FIA_data/MA_FIA.rds")
 all_states <- list(CT = ct, MA = ma,RI = ri)
 ```
 
-# Data Cleaning
+# EDA and Data Cleaning
 
-```{r}
-View(all_states)
+```{r View all datasets}
+#View(all_states)
 ```
 
 ## Connecticut
@@ -82,7 +105,7 @@ Tables we are interested in for our model:
 library(readr)
 
 # Export the data frame
-write_csv(ct$TREE, path = "TREE.csv") 
+write_csv(ct$TREE, file = "TREE.csv") 
 ```
 
 #### Key columns to look at in TREE:
@@ -91,7 +114,16 @@ write_csv(ct$TREE, path = "TREE.csv")
 -   PREVDIA (previous diameter)
 -   SPCD (species code)
 -   STATUSCD (alive/dead)
--   NVYR (inventory year)
+-   INVYR (inventory year)
+
+**Other Columns we may use:**
+
+-   CN - unique identifier for a specific observation (tree measurement)
+-   PREV_TREE_CN - Links to the previous observation's CN
+-   SUBP - Subplot \# within a Plot
+-   TREE - Tree \# within subplot
+
+After review of FIA material, for a unique identifier by tree we will use PLOT + SUBP + TREE = Permanent tree identifier
 
 ```{r Tree dataset}
 # Look at CT tree data
@@ -100,7 +132,7 @@ names(ct$TREE)  # What columns exist?
 head(ct$TREE)  # First few rows
 ```
 
-```{r}
+```{r Tree Data Columns}
 # Key columns to look for in TREE:
 # - DIA (current diameter)
 # - PREVDIA (previous diameter) 
@@ -127,7 +159,6 @@ ct$TREE %>%
     has_prev_dia = sum(!is.na(PREVDIA)),
     has_both = sum(!is.na(DIA) & !is.na(PREVDIA))
   )
-
 
 
 #Calculate % missing per column
@@ -165,11 +196,14 @@ It seems this table is every tree recorded but there are many trees which didn't
 
 Lets see if there are patterns in what is missing:
 
-```{r}
+```{r Remeasurements by Year}
+options(tibble.print_max = Inf, tibble.width = Inf)
 # Look at all inventory years
-ct$TREE %>%
+result <- ct$TREE %>%
   count(INVYR) %>%
   arrange(INVYR)
+
+print(result, width = Inf)
 
 # See which years have remeasurements
 ct$TREE %>%
@@ -191,7 +225,7 @@ We should at least limit the scope of our dataset to 2008 - 2020. We may restric
 
 #### Missingness 2008 - 2020
 
-```{r}
+```{r Missingness of Remeasurement Years}
 # How many trees have both current and previous diameter (2008-2020)?
 ct$TREE %>%
   filter(INVYR >= 2008 & INVYR <= 2020) %>%  # Filter to remeasurement years
@@ -232,7 +266,7 @@ Let's look at the STATUSCD (alive/dead) column to see if the missingness is due 
 
 Let's Look at the codes in our data:
 
-```{r}
+```{r Fia Status Code}
 unique_statuscd <- ct$TREE %>%
   distinct(STATUSCD) %>%
   pull(STATUSCD)
@@ -246,7 +280,7 @@ Based other FIA online materials **STATUSCD = 3** typically means **"Removed/C
 
 Let's check we have all the same codes for our date range:
 
-```{r}
+```{r Fia Status Code Filtered Data}
 unique_statuscd_2008_2020 <- ct$TREE %>%
   filter(INVYR >= 2008, INVYR <= 2020) %>%
   distinct(STATUSCD) %>%
@@ -259,9 +293,7 @@ unique_statuscd_2008_2020
 
 Let's check what codes were in earlier years and see if there were zeros
 
-```{r}
-
-library(dplyr)
+```{r Codes by Time Periods}
 
 # Create a dataset with status codes grouped by time period
 status_comparison <- ct$TREE %>%
@@ -311,127 +343,407 @@ It's plausible that removed trees are now part of the 0 category but may not acc
 
 **Our Data:**
 
--   **0** = Dead tree
+-   **0** = Dead tree (gone)
 -   **1** = Live tree
--   **2** = Dead tree
+-   **2** = Dead tree (still standing)
 
-```{r}
-# Of the trees missing DIA, what % are dead/removed?
+Let's get back to the missing data. Now that we know that 0 and 2 are dead trees let's see if this relates to not having a measurement.
+
+```{r Dead/Alive Trees}
+# Of the trees missing DIA, what % are dead/alive?
 ct$TREE %>%
   filter(INVYR >= 2008 & INVYR <= 2020) %>%
   filter(is.na(DIA)) %>%  # Only look at trees missing DIA
   summarize(
     total_missing_dia = n(),
-    n_dead = sum(STATUSCD == 2, na.rm = TRUE),
-    n_removed = sum(STATUSCD == 3, na.rm = TRUE),
+    n_dead = sum(STATUSCD %in% c(0, 2), na.rm = TRUE),  # 0 or 2 = dead
     n_alive = sum(STATUSCD == 1, na.rm = TRUE),
     pct_dead = 100 * n_dead / total_missing_dia,
-    pct_removed = 100 * n_removed / total_missing_dia,
     pct_alive = 100 * n_alive / total_missing_dia
-  )
+  ) %>%
+print(width = Inf)
 
-# Of the trees missing PREVDIA, what % are dead/removed?
+# Of the trees missing PREVDIA, what % are dead/alive?
 ct$TREE %>%
   filter(INVYR >= 2008 & INVYR <= 2020) %>%
   filter(is.na(PREVDIA)) %>%  # Only look at trees missing PREVDIA
   summarize(
     total_missing_prevdia = n(),
-    n_dead = sum(STATUSCD == 2, na.rm = TRUE),
-    n_removed = sum(STATUSCD == 3, na.rm = TRUE),
+    n_dead = sum(STATUSCD %in% c(0, 2), na.rm = TRUE),  # 0 or 2 = dead
     n_alive = sum(STATUSCD == 1, na.rm = TRUE),
     pct_dead = 100 * n_dead / total_missing_prevdia,
-    pct_removed = 100 * n_removed / total_missing_prevdia,
     pct_alive = 100 * n_alive / total_missing_prevdia
+  ) %>%
+print(width = Inf)
+
+```
+
+**Missing PREVDIA (Previous Diameter)**
+
+-   "ingrowth" trees
+-   **too small to measure in the previous inventory** (\< 5" DBH threshold)
+-   grew large enough by 2008+ to be included in measurements
+-   can't calculate growth rates for these trees (no baseline)
+
+Missing DIA (Current Diameter)
+
+-   Almost all trees missing current diameter are **dead or removed**
+-   You can't measure the diameter of a tree that's gone (STATUSCD=0) or too deteriorated (STATUSCD=2)
+-   The 39 live trees (1.3%) with missing DIA might be measurement errors or trees that couldn't be accessed
+
+**Ingrowth Trees**
+
+```{r Ingrowth Trees}
+# Create dataset comparing ingrowth vs non-ingrowth trees
+diameter_comparison <- ct$TREE %>%
+  filter(
+    INVYR >= 2008 & INVYR <= 2020,
+    STATUSCD == 1,           # Live trees only
+    !is.na(DIA)              # Has current diameter
+  ) %>%
+  mutate(
+    tree_type = case_when(
+      is.na(PREVDIA) | PREVDIA == 0 ~ "Ingrowth (no previous measurement)",
+      TRUE ~ "Remeasured (has previous measurement)"
+    )
   )
 
-# Cleaner crosstab for missing DIA
-ct$TREE %>%
-  filter(INVYR >= 2008 & INVYR <= 2020) %>%
-  filter(is.na(DIA)) %>%
-  count(STATUSCD) %>%
-  mutate(
-    pct = round(100 * n / sum(n), 1),
-    status_label = case_when(
-      STATUSCD == 0 ~ "Unknown",
-      STATUSCD == 1 ~ "Live",
-      STATUSCD == 2 ~ "Dead", 
-      STATUSCD == 3 ~ "Removed",
-      TRUE ~ "Other"
-    )
-  ) %>%
-  select(STATUSCD, status_label, n, pct)
 ```
 
-```{r}
-# See ALL status codes for missing DIA trees
-ct$TREE %>%
-  filter(INVYR >= 2008 & INVYR <= 2020) %>%
-  filter(is.na(DIA)) %>%
-  count(STATUSCD) %>%
-  mutate(
-    pct = round(100 * n / sum(n), 1),
-    status_label = case_when(
-      STATUSCD == 0 ~ "Unknown",
-      STATUSCD == 1 ~ "Live",
-      STATUSCD == 2 ~ "Dead", 
-      STATUSCD == 3 ~ "Removed",
-      TRUE ~ as.character(STATUSCD)  # Show any other codes
-    )
-  ) %>%
-  arrange(STATUSCD)
+The trees we assume are Ingrowth Trees are definitely smaller as a group. But there seems to be some trees that are too large. These are likely trees that are being measured for the first time.
 
-# Total count to verify
-ct$TREE %>%
-  filter(INVYR >= 2008 & INVYR <= 2020) %>%
-  filter(is.na(DIA)) %>%
-  summarize(total = n())
-```
+We understand the missing data problem now. Let's rerun for the combined TREE datasets across all states and then impute.
+
+#### Missingness in full TREE dataset
 
 ```{r}
-# Check if STATUSCD 3 exists
-ct$TREE %>%
-  filter(INVYR >= 2008 & INVYR <= 2020) %>%
-  filter(is.na(DIA)) %>%
-  count(STATUSCD, sort = TRUE)
-
-# Or check for any NA status codes
-ct$TREE %>%
-  filter(INVYR >= 2008 & INVYR <= 2020) %>%
-  filter(is.na(DIA)) %>%
+combined_tree %>%
+  group_by(INVYR) %>%
   summarize(
-    n_status_0 = sum(STATUSCD == 0, na.rm = TRUE),
-    n_status_1 = sum(STATUSCD == 1, na.rm = TRUE),
-    n_status_2 = sum(STATUSCD == 2, na.rm = TRUE),
-    n_status_3 = sum(STATUSCD == 3, na.rm = TRUE),
-    n_status_NA = sum(is.na(STATUSCD))
+    total = n(),
+    has_prevdia = sum(!is.na(PREVDIA)),
+    pct_with_prev = 100 * has_prevdia / total
+  ) %>%
+  arrange(INVYR) 
+```
+
+```{r Combined Tree Dataset}
+ 
+# Combine TREE tables from all three states
+combined_tree <- bind_rows(
+  ct$TREE %>% mutate(STATE = "CT"),
+  ma$TREE %>% mutate(STATE = "MA"),
+  ri$TREE %>% mutate(STATE = "RI")
+)
+```
+
+We will look at the dataset size of each state after we have filtered for years with remeasurements.
+
+```{r}
+# Calculate % missing per column (combined data)
+missing_summary_combined <- combined_tree %>%
+  select(PLT_CN, TREE, SUBP, CONDID, STATUSCD, SPCD, DIA, PREVDIA, 
+         INVYR, TPA_UNADJ) %>%
+  summarise(
+    PLT_CN      = 100 * sum(is.na(PLT_CN)) / n(),
+    TREE        = 100 * sum(is.na(TREE)) / n(),
+    SUBP        = 100 * sum(is.na(SUBP)) / n(),
+    CONDID      = 100 * sum(is.na(CONDID)) / n(),
+    STATUSCD    = 100 * sum(is.na(STATUSCD)) / n(),
+    SPCD        = 100 * sum(is.na(SPCD)) / n(),
+    DIA         = 100 * sum(is.na(DIA)) / n(),
+    PREVDIA     = 100 * sum(is.na(PREVDIA)) / n(),
+    INVYR       = 100 * sum(is.na(INVYR)) / n(),
+    TPA_UNADJ   = 100 * sum(is.na(TPA_UNADJ)) / n()
   )
+
+# View Missing Summary Table (raw output) 
+missing_summary_combined %>% as.data.frame() 
+t(as.data.frame(missing_summary_combined))
+
+
+# Remeasurement stats
+combined_tree %>%
+  group_by(INVYR) %>%
+  summarize(
+    total         = n(),
+    has_prevdia   = sum(!is.na(PREVDIA)),
+    pct_with_prev = 100 * has_prevdia / total
+  ) %>%
+  arrange(INVYR) %>%
+  as.data.frame() %>%
+  kable(caption = "Remeasurement Stats by Inventory Year")
+
+# Patterns by state
+combined_tree %>%
+  group_by(STATE, INVYR) %>%
+  summarize(
+    total         = n(),
+    has_prevdia   = sum(!is.na(PREVDIA)),
+    pct_with_prev = 100 * has_prevdia / total
+  ) %>%
+  arrange(STATE, INVYR) %>%
+  as.data.frame() %>%
+  kable(caption = "Patterns of Remeasurements by State and Inventory Year")
+
+# Compare missing data across states
+combined_tree %>%
+  group_by(STATE) %>%
+  summarise(
+    n_trees            = n(),
+    pct_missing_DIA    = 100 * sum(is.na(DIA)) / n(),
+    pct_missing_PREVDIA = 100 * sum(is.na(PREVDIA)) / n()
+  ) %>%
+  as.data.frame() %>%
+  kable(caption = "Missing Data Percentages by State")
+
+
+```
+
+All states start remeasurements in 2008.
+
+Check status codes are the same:
+
+```{r check status codes all states}
+
+unique_statuscd_2008_2020_all_states <- combined_tree %>%
+  filter(INVYR >= 2008, INVYR <= 2020) %>%
+  distinct(STATUSCD) %>%
+  pull(STATUSCD)
+
+unique_statuscd_2008_2020_all_states
+```
+
+Status codes are the same for all states
+
+```{r}
+# Of the trees missing DIA, what % are dead/alive?
+dia_summary <- combined_tree %>%
+  filter(INVYR >= 2008 & INVYR <= 2020) %>%
+  filter(is.na(DIA)) %>%  # Only look at trees missing DIA
+  summarize(
+    total_missing_dia = n(),
+    n_dead = sum(STATUSCD %in% c(0, 2), na.rm = TRUE),  # 0 or 2 = dead
+    n_alive = sum(STATUSCD == 1, na.rm = TRUE),
+    pct_dead = 100 * n_dead / total_missing_dia,
+    pct_alive = 100 * n_alive / total_missing_dia
+  )
+
+kable(dia_summary, caption = "Percentage of Dead/Alive Trees Missing DIA")
+
+# Of the trees missing PREVDIA, what % are dead/alive?
+combined_tree %>%
+  filter(INVYR >= 2008 & INVYR <= 2020) %>%
+  filter(is.na(PREVDIA)) %>%  # Only look at trees missing PREVDIA
+  summarize(
+    total_missing_prevdia = n(),
+    n_dead = sum(STATUSCD %in% c(0, 2), na.rm = TRUE),  # 0 or 2 = dead
+    n_alive = sum(STATUSCD == 1, na.rm = TRUE),
+    pct_dead = 100 * n_dead / total_missing_prevdia,
+    pct_alive = 100 * n_alive / total_missing_prevdia
+  ) %>%
+print(width = Inf)
+```
+
+**Missing DIA (10,807 trees)**
+
+-   **Dead: 10,615 trees (98.22%)** Expected - can't measure dead/removed trees
+
+-   **Alive: 192 trees (1.78%)** - Small number of measurement errors
+
+    ***(This is something we could impute but it is very small so if we don't have time for imputation it shouldn't strongly affect our overall conclusions)***
+
+**Missing PREVDIA (8,595 trees)**
+
+-   **Dead: 400 trees (4.65%)** - Some trees died before being remeasured
+-   **Alive: 8,195 trees (95.35%)** Expected - these are **ingrowth trees**
+
+```{r}
+# Strict comparison: Only NA PREVDIA vs valid PREVDIA > 0
+diameter_comparison <- combined_tree %>%
+  filter(
+    INVYR >= 2008 & INVYR <= 2020,
+    STATUSCD == 1,           # Live trees only
+    !is.na(DIA)              # Has current diameter
+  ) %>%
+  mutate(
+    tree_type = case_when(
+      is.na(PREVDIA) ~ "Ingrowth",
+      PREVDIA > 0 ~ "Remeasured",
+      TRUE ~ NA_character_  # Exclude PREVDIA = 0
+    )
+  ) %>%
+  filter(!is.na(tree_type))  # Remove PREVDIA = 0 trees
+
+# Summary table
+diameter_summary <- diameter_comparison %>%
+  group_by(tree_type) %>%
+  summarise(
+    n = n(),
+    mean_dia = round(mean(DIA, na.rm = TRUE), 2),
+    median_dia = round(median(DIA, na.rm = TRUE), 2)
+  ) %>%
+  as.data.frame()
+
+# Display table
+kable(diameter_summary, 
+      caption = "Diameter Summary: Ingrowth vs Remeasured Trees",
+      col.names = c("Tree Type", "N", "Mean (in)", "Median (in)"))
+```
+
+Smaller trees are in the ingrowth category indicating that these are likely trees which were too small to measure in previous years. We will move forward for now but a good next step for our analysis would be to investigate this category and get more certainty on the missing data. This may also be a category some data that would be a good candidate for imputation.
+
+#### Remeasurement Checks
+
+```{r}
+
+# intervals dataset
+intervals <- combined_tree %>%
+  filter(INVYR >= 2008) %>%
+  left_join(
+    combined_tree %>% select(CN, INVYR) %>% rename(PREV_INVYR = INVYR),
+    by = c("PREV_TRE_CN" = "CN")
+  ) %>%
+  mutate(years_between = INVYR - PREV_INVYR) %>%
+  filter(!is.na(years_between), years_between > 0)
+
+# Check intervals by state and year
+intervals %>%
+  group_by(STATE, INVYR) %>%
+  summarise(
+    n = n(),
+    mean_interval = round(mean(years_between), 1),
+    median_interval = median(years_between),
+    min_interval = min(years_between),
+    max_interval = max(years_between)
+  ) %>%
+  arrange(STATE, INVYR) %>%
+  as.data.frame() %>%
+  kable(caption = "Intervals by State and Year") # add kable here
+
+# Are intervals consistent within each state?
+intervals %>%
+  group_by(STATE) %>%
+  summarise(
+    n = n(),
+    mean_interval = round(mean(years_between), 1),
+    sd_interval = round(sd(years_between), 1),
+    most_common = median(years_between)
+  ) %>%
+  as.data.frame() %>%
+  kable(caption = "Interval Consistency Statistics by State") # add kable here
+
+# Distribution of intervals by state
+intervals %>%
+  count(STATE, years_between) %>%
+  group_by(STATE) %>%
+  mutate(pct = round(100 * n / sum(n), 1)) %>%
+  arrange(STATE, years_between) %>%
+  as.data.frame() %>%
+  kable(caption = "Distribution of Intervals by State") # add kable here
+
+
+# Visualization: Intervals by state
+ggplot(intervals, aes(x = years_between, fill = STATE)) +
+  geom_bar(position = "dodge") +
+  labs(
+    title = "Remeasurement Intervals by State",
+    subtitle = "Are measurement cycles consistent?",
+    x = "Years Between Measurements",
+    y = "Count"
+  ) +
+  theme_minimal()
+
+# Heatmap: Which years have which intervals?
+intervals %>%
+  count(STATE, INVYR, years_between) %>%
+  ggplot(aes(x = INVYR, y = as.factor(years_between), fill = n)) +
+  geom_tile() +
+  facet_wrap(~STATE, ncol = 1) +
+  scale_fill_gradient(low = "white", high = "#3498DB") +
+  labs(
+    title = "Measurement Intervals Over Time by State",
+    x = "Inventory Year",
+    y = "Years Since Previous Measurement",
+    fill = "Count"
+  ) +
+  theme_minimal()
 ```
 
 ```{r}
-# See ALL unique status codes (not just 0, 1, 2, 3)
-ct$TREE %>%
-  filter(INVYR >= 2008 & INVYR <= 2020) %>%
-  filter(is.na(DIA)) %>%
-  pull(STATUSCD) %>%
-  unique() %>%
-  sort()
+# Show which previous years contribute to each current year
+intervals %>%
+  filter(INVYR %in% c(2018, 2019, 2020)) %>%  # Pick a few recent years
+  count(STATE, INVYR, PREV_INVYR, years_between) %>%
+  arrange(STATE, INVYR, years_between) %>%
+  kable(caption = "Previous Measurement Years Contributing to 2018-2020")
 
-# Or check the full range
-ct$TREE %>%
-  filter(INVYR >= 2008 & INVYR <= 2020) %>%
-  filter(is.na(DIA)) %>%
-  group_by(STATUSCD) %>%
-  summarize(n = n()) %>%
-  arrange(STATUSCD)
+# Summary: For each inventory year, what mix of intervals exists?
+intervals %>%
+  group_by(STATE, INVYR) %>%
+  summarise(
+    n_trees = n(),
+    intervals_present = paste(sort(unique(years_between)), collapse = ", "),
+    most_common = median(years_between),
+    .groups = "drop"
+  ) %>%
+  kable(caption = "Mix of Measurement Intervals by State and Year")
 
-# Double-check the count function isn't dropping rows
-ct$TREE %>%
-  filter(INVYR >= 2008 & INVYR <= 2020) %>%
-  filter(is.na(DIA)) %>%
-  nrow()
+# Check if specific plots have consistent intervals
+intervals %>%
+  group_by(STATE, PLOT) %>%
+  summarise(
+    n_measurements = n(),
+    intervals = paste(sort(unique(years_between)), collapse = ", "),
+    sd_interval = round(sd(years_between), 2),
+    .groups = "drop"
+  ) %>%
+  filter(n_measurements > 1) %>%  # Only plots with multiple remeasurements
+  arrange(STATE, PLOT) %>%
+  head(20) %>%
+  kable(caption = "Measurement Interval Consistency Within Plots (First 20 plots)")
 ```
 
-We also have the TREE_GRM_COMPNENT table. This should only include remeasured trees.
+### 1. **Multiple intervals exist within the same year**
+
+Looking at 2020 for example:
+
+-   **CT 2020:** Mix of 7-year intervals (last measured 2013)
+-   **MA 2020:** Mix of 7-year intervals (last measured 2013)
+-   **RI 2020:** Mix of 7-year intervals (last measured 2013)
+
+But in 2018 and 2019, you see:
+
+-   **2018:** Both 6-year (from 2012) and 7-year (from 2011) intervals
+-   **2019:** Both 6-year (from 2013) and 7-year (from 2012) intervals
+
+### 2. **Individual plots ARE fairly consistent**
+
+The standard deviations are low (0.92 - 1.52), meaning:
+
+-   Most plots stick to similar intervals across remeasurements
+-   Example: Plot 51 has `sd = 0.00` - perfectly consistent 4-year intervals
+-   Example: Plot 32 has `sd = 0.00` - perfectly consistent 6-year intervals
+-   Most plots vary by only \~1 year between measurement cycles
+
+### 3. **Different plots have different "schedules"**
+
+-   Some plots: Consistent 4-year cycles (Plot 51, 101, 201, etc.)
+-   Some plots: Consistent 5-7 year cycles
+-   A few plots: Mix of 4, 5, 6, and 7-year intervals
+
+**State Patterns:**
+
+1.  **All three states follow similar patterns** - they're on the same measurement schedule
+2.  **2018:** Dominated by 6-year intervals (plots last measured in 2012)
+3.  **2019:** Mixed, shifting toward 7-year intervals (plots from 2012 and 2013)
+4.  **2020:** All 7-year intervals (plots last measured in 2013)
+
+**Interval Conclusion: Must include time interval as a variable**
+
+### TREE_GRM_COMPENT
+
+We also have the TREE_GRM_COMPNENT table. This should only include remeasured trees. We've analyzed the full TREE table with all the samples to understand what it is that's missing in the TREE_GRM_COMPENT table.
 
 ```{r}
 # This table might have pre-calculated growth
@@ -445,36 +757,200 @@ ct$TREE_GRM_COMPONENT %>%
   head(20)
 ```
 
-The `TREE_GRM_COMPONENT` table has **pre-calculated annual growth rates**
+The TREE_GRM_COMPENT table does have **pre-calculated annual growth rates**
 
 ## Key columns we need:
 
--   **ANN_DIA_GROWTH** - Annual diameter growth (already calculated!)
+-   **ANN_DIA_GROWTH** - Annual diameter growth
 -   **DIA_BEGIN** - Starting diameter
 -   **DIA_END** - Ending diameter
--   **TRE_CN** - Tree identifier (to join back to TREE table)
+-   **TRE_CN** - Tree identifier (to join back to TREE table
+
+```{r}
+# Combine TREE_GRM_COMPONENT from all three states
+combined_growth <- bind_rows(
+  ct$TREE_GRM_COMPONENT %>% mutate(STATE = "CT"),
+  ma$TREE_GRM_COMPONENT %>% mutate(STATE = "MA"),
+  ri$TREE_GRM_COMPONENT %>% mutate(STATE = "RI")
+)
+nrow(combined_growth)
+
+```
 
 ```{r}
 # Look at the growth data
-head(ct$TREE_GRM_COMPONENT %>% 
-     select(TRE_CN, PLT_CN, DIA_BEGIN, DIA_END, ANN_DIA_GROWTH))
+head(combined_growth %>% 
+     select(TRE_CN, PLT_CN, DIA_BEGIN, DIA_END, ANN_DIA_GROWTH, STATE)) %>%
+  kable(caption = "First Few Rows of Combined Growth Data")
 
-# Summary statistics
-summary(ct$TREE_GRM_COMPONENT$ANN_DIA_GROWTH)
+# Summary statistics overall
+summary(combined_growth$ANN_DIA_GROWTH)
+
+# Summary by state
+combined_growth %>%
+  group_by(STATE) %>%
+  summarise(
+    n = n(),
+    mean_growth = round(mean(ANN_DIA_GROWTH, na.rm = TRUE), 3),
+    median_growth = round(median(ANN_DIA_GROWTH, na.rm = TRUE), 3),
+    min_growth = round(min(ANN_DIA_GROWTH, na.rm = TRUE), 3),
+    max_growth = round(max(ANN_DIA_GROWTH, na.rm = TRUE), 3),
+    n_missing = sum(is.na(ANN_DIA_GROWTH))
+  ) %>%
+  kable(caption = "Annual Diameter Growth Summary by State")
 
 # Remove any missing or weird values
-growth_clean <- ct$TREE_GRM_COMPONENT %>%
+growth_clean <- combined_growth %>%
   filter(!is.na(ANN_DIA_GROWTH),
-         ANN_DIA_GROWTH > 0,  # Positive growth only
-         ANN_DIA_GROWTH < 2)  # Remove outliers (>2 inches/year is suspicious)
+    ANN_DIA_GROWTH >= 0)  # Positive growth only, negative doesn't make conceptual sense
 
-# How many trees?
-nrow(growth_clean)
+# How many trees total and by state?
+growth_clean %>%
+  group_by(STATE) %>%
+  summarise(n_trees = n()) %>%
+  bind_rows(
+    growth_clean %>% summarise(STATE = "TOTAL", n_trees = n())
+  ) %>%
+  kable(caption = "Number of Trees After Cleaning")
 
-# Distribution
+# Distribution - all states combined
 hist(growth_clean$ANN_DIA_GROWTH, breaks = 50,
      main = "Annual Diameter Growth",
-     xlab = "Growth (inches/year)")
+     xlab = "Growth (inches/year)",
+     col = "#3498DB")
+
+# Distribution by state (side-by-side)
+ggplot(growth_clean, aes(x = ANN_DIA_GROWTH, fill = STATE)) +
+  geom_histogram(bins = 50, alpha = 0.6, position = "identity") +
+  labs(
+    title = "Annual Diameter Growth Distribution by State",
+    x = "Growth (inches/year)",
+    y = "Count",
+    fill = "State"
+  ) +
+  theme_minimal()
+
+# Boxplot comparison
+ggplot(growth_clean, aes(x = STATE, y = ANN_DIA_GROWTH, fill = STATE)) +
+  geom_boxplot() +
+  labs(
+    title = "Annual Diameter Growth by State",
+    x = "State",
+    y = "Growth (inches/year)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+This is right skewed we should take the log of this:
+
+```{r}
+# Add log-transformed growth
+growth_clean <- combined_growth %>%
+  mutate(log_growth = log(ANN_DIA_GROWTH))
+
+# Distribution - all states combined
+hist(growth_clean$log_growth, breaks = 50,
+     main = "Log Annual Diameter Growth",
+     xlab = "Growth (inches/year)",
+     col = "#3498DB")
+```
+
+There are big gaps let's find out why:
+
+```{r}
+# Check what's causing the gaps in log-transformed data
+summary(combined_growth$ANN_DIA_GROWTH)
+
+# Are there zeros or negative values?
+combined_growth %>%
+  summarise(
+    n_total = n(),
+    n_zero = sum(ANN_DIA_GROWTH == 0, na.rm = TRUE),
+    n_negative = sum(ANN_DIA_GROWTH < 0, na.rm = TRUE),
+    n_positive = sum(ANN_DIA_GROWTH > 0, na.rm = TRUE),
+    min_value = min(ANN_DIA_GROWTH, na.rm = TRUE),
+    max_value = max(ANN_DIA_GROWTH, na.rm = TRUE)
+  ) %>%
+  kable()
+
+# Look at the distribution more carefully
+combined_growth %>%
+  filter(!is.na(ANN_DIA_GROWTH)) %>%
+  count(ANN_DIA_GROWTH < 0) %>%
+  kable(caption = "Are there negative growth values?")
+
+# Check for very small values that might cause issues
+combined_growth %>%
+  filter(ANN_DIA_GROWTH > 0 & ANN_DIA_GROWTH < 0.01) %>%
+  summarise(
+    n_very_small = n(),
+    examples = paste(head(ANN_DIA_GROWTH, 5), collapse = ", ")
+  ) %>%
+  kable()
+```
+
+Looking at this I realized I have zero growth values that will be lost with log.
+
+**Problem:** 4,108 trees with no growth (ANN_DIA_GROWTH = 0)
+
+-   `log(0)` is **undefined** (negative infinity)
+-   R likely dropped these or created `-Inf` values
+
+This doesn't account for there being gaps in different places though, but it's important to keep our 0 values as these are real cases of trees that didn't experience any annual growth.
+
+Let's keep looking for the gaps
+
+```{r}
+# Look at the actual values in growth_clean
+growth_clean %>%
+  pull(ANN_DIA_GROWTH) %>%
+  head(100)
+
+# Are values discrete/rounded?
+growth_clean %>%
+  count(ANN_DIA_GROWTH) %>%
+  arrange(desc(n)) %>%
+  head(20) %>%
+  kable(caption = "Most common growth values - Are they rounded?")
+
+# Check if growth values are multiples of 0.01
+growth_clean %>%
+  mutate(
+    rounded_to_hundredth = round(ANN_DIA_GROWTH, 2) == ANN_DIA_GROWTH
+  ) %>%
+  count(rounded_to_hundredth) %>%
+  kable()
+
+```
+
+Gaps are due to transformation of discrete data.
+
+**Original data (rounded to 0.01):**
+
+-   You have: 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08...
+-   These are discrete, evenly spaced values
+
+**After log transformation:**
+
+-   You have: log(0.01) = -4.605, log(0.02) = -3.912, log(0.03) = -3.507, log(0.04) = -3.219, log(0.05) = -2.996, log(0.06) = -2.813, log(0.07) = -2.659, log(0.08) = -2.526
+
+gaps between log values are not equal anymore:
+
+-   Gap between log(0.01) and log(0.02) = 0.693
+-   Gap between log(0.07) and log(0.08) = 0.133
+
+The gaps will be less prominent with square root and we want to keep our zeros.
+
+Let's try square root transformation instead since we want to keep our zero growth values:
+
+```{r}
+growth_clean_sqrt <- growth_clean %>%
+  mutate(sqrt_growth = sqrt(ANN_DIA_GROWTH))
+
+hist(growth_clean_sqrt$sqrt_growth, breaks = 50,
+     main = "Square Root-Transformed Growth (Keeps Zeros)",
+     xlab = "sqrt(Growth)", col = "#3498DB")
 ```
 
 ```{r}
@@ -555,33 +1031,6 @@ names(ct$COND)
 ct$COND %>%
   count(FORTYPCD) %>%
   arrange(desc(n))
-```
-
-```{r}
-# Ecological codes
-head(ct$PLOTGEOM)
-names(ct$PLOTGEOM)
-
-# What provinces/subsections?
-ct$PLOTGEOM %>%
-  count(ECOPROVCD) %>%
-  arrange(desc(n))
-
-ct$PLOTGEOM %>%
-  count(ECOSUBCD) %>%
-  arrange(desc(n))
-```
-
-```{r}
-head(ma)
-```
-
-```{r}
-names(ct)
-```
-
-```{r}
-head(ri)
 ```
 
 # References
