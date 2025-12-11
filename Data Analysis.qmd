@@ -14,6 +14,7 @@ library(tibble)
 library(tidyverse)
 library(lme4)
 library(knitr)
+library(performance)
 options(tibble.width = Inf)   # show all columnsoptions(digits = 10)          # show more digits
 ```
 
@@ -741,11 +742,13 @@ The standard deviations are low (0.92 - 1.52), meaning:
 3.  **2019:** Mixed, shifting toward 7-year intervals (plots from 2012 and 2013)
 4.  **2020:** All 7-year intervals (plots last measured in 2013)
 
-**Interval Conclusion: Must include time interval as a variable**
+**Interval Conclusion: Must include time interval as a variable unless we annualize the growth rate**
 
-### TREE_GRM_COMPENT
+### Tree Growth Table
 
-We also have the TREE_GRM_COMPNENT table. This should only include remeasured trees. We've analyzed the full TREE table with all the samples to understand what it is that's missing in the TREE_GRM_COMPENT table from the full tree dataset.
+**TREE_GRM_COMPENT**
+
+We also have the TREE_GRM_COMPNENT table. This should only include remeasured trees. We've analyzed the full TREE table with all the samples to understand what it is that's missing in the TREE_GRM_COMPENT table from the full tree dataset. Also this table is annualized so we won't need the interval as a predictor.
 
 ```{r}
 # This table might have pre-calculated growth
@@ -1029,14 +1032,14 @@ ct$COND %>%
   arrange(desc(n))
 ```
 
-# Dataset Creation
+# Model Dataset Creation
 
 ```{r}
 # Create model dataset (starting from growth_clean which has filtering done)
 model_data <- growth_clean %>%
-  # Join with combined_tree to get PLOT, SUBP, TREE identifiers
+  # Join with combined_tree to get PLOT, SUBP, TREE identifiers AND SPCD
   left_join(
-    combined_tree %>% select(CN, PLOT, SUBP, TREE, CONDID, INVYR),
+    combined_tree %>% select(CN, PLOT, SUBP, TREE, CONDID, INVYR, SPCD),  # Added SPCD here
     by = c("TRE_CN" = "CN")
   ) %>%
   # Create IDs
@@ -1090,13 +1093,34 @@ saveRDS(model_data, "FIA_data/model_data_multilevel.rds")
 
 ```
 
-# Model
+# Modeling
+
+**Fixed Effects:**
+
+-   `STDAGE` = Stand age
+-   `SPCD` = Species
+
+**Random Effects (5 nested levels):**
+
+-   Level 5: Ecological subsections (15) - broad climate/geography regions
+-   Level 4: States (3) - CT, MA, RI
+-   Level 3: Forest types (45) - nested within states
+-   Level 2: Plots (1,080) - permanent monitoring locations
+-   Level 1: Trees (36,574) - individual trees measured repeatedly over time
+
+**Random Intercept:**
+
+-   Each group (tree, plot, forest type, state, subsection) gets its own baseline growth rate
+-   But the effect of predictors (FORTYPCD, STDAGE, SPCD) is assumed to be the same across all groups
+
+Model Question: Do growth rates vary by forest type, stand age, and species while accounting for clustering at multiple geographic and ecological levels?
+
+## Model 1
 
 ```{r}
 # Build the 5-level model
 model <- lmer(
-  sqrt_growth ~ 
-    FORTYPCD + STDAGE +
+  sqrt_growth ~ STDAGE + factor(SPCD) +
     (1 | ECOSUBCD / STATE / FORTYPCD / PLOT_ID / TREE_ID),
   data = model_data
 )
@@ -1104,6 +1128,160 @@ model <- lmer(
 # Model summary
 summary(model)
 ```
+
+## Model 1 Results:
+
+### Fixed Effects:
+
+**STDAGE (Stand Age):**
+
+-   Coefficient: -0.000825 (p \< 0.001)
+-   **Interpretation:** For each additional year of stand age, growth rate decreases by 0.000825 on the sqrt scale
+-   **Makes biological sense:** Older stands have slower-growing trees
+
+**SPCD (Species):**
+
+-   Baseline species SPCD = 10
+-   **Significantly slower growers than baseline:**
+    -   Species 923: -0.313 (p \< 0.001) - slowest
+    -   Species 763: -0.277 (p \< 0.001)
+    -   Species 319: -0.254 (p \< 0.001)
+    -   Species 421: -0.215 (p \< 0.001)
+-   **Not significantly different from baseline:**
+    -   Species 12, 57, 94, 125, 621, 833, 837 (p \> 0.05)
+
+### Random Effects (Variance Components):
+
+| Level                     | Variance | Interpretation                        |
+|------------------|------------|-----------------------------|
+| **Tree** (Level 1)        | 0.00447  | Largest - individual tree differences |
+| **Plot** (Level 2)        | 0.00117  | Plot-level variation                  |
+| **Forest Type** (Level 3) | 0.00016  | Forest type differences               |
+| **State** (Level 4)       | 0.00006  | Small state-level differences         |
+| **Ecosubcd** (Level 5)    | 0.00009  | Ecological subsection variation       |
+| **Residual**              | 0.00135  | Unexplained variation                 |
+
+```{r}
+# Calculate ICC for all levels
+icc_results <- icc(model, by_group = TRUE)
+print(icc_results)
+
+# Manual calculation to understand it better
+variance_components <- as.data.frame(VarCorr(model))
+
+variance_components %>%
+  mutate(
+    ICC = vcov / sum(vcov),
+    Percent = round(100 * ICC, 2)
+  ) %>%
+  select(grp, vcov, ICC, Percent) %>%
+  kable(caption = "Variance Partitioning (ICC) by Level",
+        col.names = c("Level", "Variance", "ICC", "% of Total Variance"))
+
+# Total variance
+total_var <- sum(variance_components$vcov)
+
+# Variance at each level
+cat("\nVariance Decomposition:\n")
+cat("Tree level:", round(100 * variance_components$vcov[1] / total_var, 2), "%\n")
+cat("Plot level:", round(100 * variance_components$vcov[2] / total_var, 2), "%\n")
+cat("Forest Type:", round(100 * variance_components$vcov[3] / total_var, 2), "%\n")
+cat("State level:", round(100 * variance_components$vcov[4] / total_var, 2), "%\n")
+cat("Ecosubcd level:", round(100 * variance_components$vcov[5] / total_var, 2), "%\n")
+cat("Residual:", round(100 * variance_components$vcov[6] / total_var, 2), "%\n")
+```
+
+## ICC Findings:
+
+### **Tree Level (61.26%)** - most important
+
+-   **61% of variation in growth is between individual trees**
+-   This confirms you NEED the multilevel structure with tree-level random effects
+-   Individual tree characteristics (genetics, microsite conditions, competition) matter most
+
+### **Plot Level (15.97%)** - important
+
+-   **16% of variation is between plots**
+-   Plot-level conditions (soil, topography, disturbance history) are meaningful
+-   Justifies including plots as a grouping level
+
+### **Forest Type (2.20%)** - small
+
+-   Forest type adds modest variation
+-   Could keep or remove this level
+
+### **State (0.83%) & Ecosubcd (1.22%)** - very small
+
+-   Combined \~2% of variation
+-   These highest levels add little beyond plot and tree
+-   **Could consider simplifying** to a 3-level model (Tree → Plot → Forest Type)
+
+### **Residual (18.51%)** - Unexplained variation
+
+-   Measurement error + unmeasured factors
+
+Let's try removing state and ecosubcd.
+
+## Model 2
+
+```{r}
+# Simpler 3-level model
+model_simple <- lmer(
+  sqrt_growth ~ STDAGE + factor(SPCD) +
+    (1 | FORTYPCD / PLOT_ID / TREE_ID),
+  data = model_data
+)
+
+summary(model_simple)
+icc(model_simple, by_group = TRUE)
+```
+
+## Comparison: 5-Level vs 3-Level Model
+
+| Model       | REML      | Tree ICC | Plot ICC | Upper Levels ICC    |
+|-------------|-----------|----------|----------|---------------------|
+| **5-level** | -246618.9 | 61.3%    | 16.0%    | 4.1% (FT+State+Eco) |
+| **3-level** | -246611.8 | 60.5%    | 17.0%    | 4.2% (FT only)      |
+
+### Model 1 vs Model 2:
+
+1.  **Nearly identical fit** (REML values very close)
+2.  **Same conclusions** - Tree (61%) and Plot (17%) variance dominate
+3.  **Simpler is better** - State and Ecosubcd levels added complexity without improving fit
+4.  **Forest Type still matters** (4.2% variance) - worth keeping
+
+### Fixed Effects Evaluation:
+
+### **STDAGE (Stand Age):**
+
+-   Coefficient: -0.000826
+-   **p \< 0.001**\* (highly significant)
+-   Keep - evidence older stands have slower growth
+
+### **SPCD (Species):**
+
+Looking at the 93 species coefficients:
+
+**Highly significant (p \< 0.001):**
+
+-   Species 315, 319, 391, 421, 701, 763, 816, 922, 923, 927, etc.
+-   Clear differences from baseline
+
+**Marginally significant (p \< 0.05):**
+
+-   Many more species (43, 68, 71, 91, 97, 130, etc.)
+
+**Not significant (p \> 0.05):**
+
+-   About 40-50 species show no difference from baseline
+
+### Should We Keep Species?
+
+Yes, because:
+
+Many species ARE significantly different
+
+Species is biologically important for growth
 
 # References
 
